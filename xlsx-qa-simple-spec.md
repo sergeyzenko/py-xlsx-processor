@@ -2,39 +2,26 @@
 
 ## Overview
 
-A Python terminal app that extracts questions from an XLSX file, prompts the user to answer each one interactively, and writes answers back to the spreadsheet.
+A Python terminal app that:
 
----
+- Loads an XLSX questionnaire.
+- Extracts every textual cell and maintains a CSV “catalog” for human review.
+- Prompts the user only for rows marked as questions (with optional default answers).
+- Writes collected answers back to the workbook at user-specified locations.
+
+The workflow is deliberately two-phase:
+
+1. **Catalog preparation.** First run mirrors workbook text to `<source>_catalog.csv`. Analysts edit this file (classify `isQuestion`, supply default answers, etc.).
+2. **Interactive answering.** Subsequent runs consume the curated catalog, prompt for outstanding answers, update the CSV, and persist responses into a copy of the workbook.
 
 ## Flow
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  Bootstrap  │────▶│  Load XLSX  │────▶│  Extract    │────▶│  Interactive│────▶│  Write Back │
-│  venv       │     │             │     │  Questions  │     │  Q&A Loop   │     │  & Save     │
-└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
+┌─────────────┐     ┌─────────────┐     ┌──────────────┐     ┌──────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Bootstrap  │────▶│  Load XLSX  │────▶│  Extract Text │────▶│  Sync Catalog │────▶│  Interactive│────▶│  Write Back │
+│  venv       │     │             │     │  Cells        │     │  (CSV)        │     │  Q&A Loop   │     │  & Save     │
+└─────────────┘     └─────────────┘     └──────────────┘     └──────────────┘     └─────────────┘     └─────────────┘
 ```
-
----
-
-## venv Auto-Management
-
-The app self-manages its virtual environment. User never manually activates/deactivates.
-
-### Bootstrap Logic
-
-```python
-def bootstrap_venv():
-    """
-    Runs BEFORE any imports except stdlib.
-    Must be at the very top of the entry point script.
-    
-    1. Detect if running inside the project's venv
-    2. If not → create venv if missing, then re-exec into it
-    3. Verify dependencies installed, install if missing
-    """
-```
-
 ### Startup Sequence
 
 ```
@@ -63,191 +50,43 @@ def bootstrap_venv():
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Implementation
+### venv Auto-Management
 
-```python
-#!/usr/bin/env python3
-"""
-Entry point with venv auto-management.
-This block runs before any third-party imports.
-"""
-import sys
-import os
-import subprocess
+Bootstrap script handles virtual environment setup automatically prior to loading any third-party code.
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-VENV_DIR = os.path.join(SCRIPT_DIR, 'venv')
-VENV_PYTHON = os.path.join(VENV_DIR, 'bin', 'python')
-REQUIRED_PACKAGES = ['openpyxl']
+1. Detect current interpreter. If not `./venv/bin/python`, create the venv (first run only) and `os.execv` back into it.
+2. Once inside the managed venv, ensure required packages (`openpyxl`) are installed.
+3. Proceed with application imports and execution.
 
+Key properties:
 
-def in_project_venv() -> bool:
-    """Check if current Python executable is the project's venv."""
-    return os.path.abspath(sys.executable) == os.path.abspath(VENV_PYTHON)
-
-
-def venv_exists() -> bool:
-    """Check if venv directory structure exists."""
-    return (
-        os.path.isdir(VENV_DIR) and
-        os.path.isfile(VENV_PYTHON) and
-        os.path.isfile(os.path.join(VENV_DIR, 'pyvenv.cfg'))
-    )
-
-
-def create_venv():
-    """Create virtual environment in project root."""
-    print(f"Creating virtual environment in {VENV_DIR}...")
-    subprocess.check_call([sys.executable, '-m', 'venv', VENV_DIR])
-    print("Virtual environment created.")
-
-
-def reexec_in_venv():
-    """Re-execute current script using venv Python."""
-    print("Switching to virtual environment...")
-    os.execv(VENV_PYTHON, [VENV_PYTHON] + sys.argv)
-
-
-def ensure_packages():
-    """Install missing packages in current venv."""
-    missing = []
-    for pkg in REQUIRED_PACKAGES:
-        try:
-            __import__(pkg)
-        except ImportError:
-            missing.append(pkg)
-    
-    if missing:
-        print(f"Installing missing packages: {', '.join(missing)}...")
-        subprocess.check_call([
-            sys.executable, '-m', 'pip', 'install', '--quiet', *missing
-        ])
-        print("Packages installed.")
-
-
-def bootstrap():
-    """Main bootstrap sequence."""
-    if not in_project_venv():
-        if not venv_exists():
-            create_venv()
-        reexec_in_venv()
-        # Never reaches here - execv replaces process
-    
-    ensure_packages()
-
-
-# === BOOTSTRAP RUNS HERE ===
-bootstrap()
-
-# === SAFE TO IMPORT THIRD-PARTY PACKAGES NOW ===
-from openpyxl import load_workbook
-# ... rest of application code
-
-
-def main():
-    # Application logic here
-    pass
-
-
-if __name__ == '__main__':
-    try:
-        main()
-    finally:
-        # No explicit deactivation needed - process exits, venv context dies
-        pass
-```
-
-### Key Points
-
-1. **No manual activation** - User just runs `python3 xlsx_qa.py`, bootstrap handles the rest
-
-2. **Re-exec pattern** - Script re-launches itself using venv Python via `os.execv()`. This replaces the current process entirely.
-
-3. **Deactivation is implicit** - When the script exits, the process ends. There's no shell session to "deactivate". The venv only exists for the script's lifetime.
-
-4. **First run is slower** - Creates venv + installs packages. Subsequent runs skip straight to main.
-
-5. **venv location** - Always `./venv` relative to script location, not cwd.
-
-### User Experience
-
-```bash
-# First run (any Python 3)
-$ python3 xlsx_qa.py questionnaire.xlsx
-Creating virtual environment in /path/to/project/venv...
-Virtual environment created.
-Switching to virtual environment...
-Installing missing packages: openpyxl...
-Packages installed.
-
-Loading: questionnaire.xlsx
-Found 47 questions...
-
-# Subsequent runs (instant start)
-$ python3 xlsx_qa.py questionnaire.xlsx
-Loading: questionnaire.xlsx
-Found 47 questions...
-```
-
-### venv Directory Structure
-
-After first run, project folder contains:
-
-```
-xlsx_qa/
-├── xlsx_qa.py          # Main script
-├── venv/               # Auto-created
-│   ├── bin/
-│   │   ├── python
-│   │   ├── python3
-│   │   ├── pip
-│   │   └── ...
-│   ├── lib/
-│   │   └── python3.x/
-│   │       └── site-packages/
-│   │           └── openpyxl/
-│   └── pyvenv.cfg
-└── ...
-```
-
-### Cleanup
-
-To reset environment:
-
-```bash
-rm -rf venv
-# Next run will recreate it
-```
-
----
+- **No manual activation:** Users always invoke `python3 xlsx_qa.py ...`.
+- **Process replacement:** `execv` guarantees subsequent logic runs inside the right interpreter.
+- **Implicit teardown:** The venv is process-scoped; no explicit deactivation step is required.
+- **Idempotent:** Repeated invocations skip creation/installation when already satisfied.
 
 ## Data Structures
 
-### Question Object
+### Catalog Record
 
 ```python
 @dataclass
-class Question:
-    id: int                    # Sequential ID for user reference
-    sheet: str                 # Sheet name
-    coord: str                 # Cell coordinate (e.g., "B5")
-    row: int                   # Row number
-    col: int                   # Column number
-    text: str                  # Question text
-    answer_coord: str          # Where to write the answer
-    answer: str | None = None  # User's answer (filled during Q&A loop)
+class CatalogRecord:
+    tab_name: str
+    text_location: str
+    text_value: str
+    is_question: bool | None = None
+    text_response: str | None = None
+    text_response_location: str | None = None
+    is_default_answer: bool | None = None
+    default_answer_question_location: str | None = None
+    is_instruction: bool | None = None
 ```
 
-### Answer Target Strategy
-
-Default: Answer goes in the cell immediately to the right of the question.
-
-```
-Question in B5  →  Answer in C5
-Question in D10 →  Answer in E10
-```
-
-If the cell to the right already has content, flag it during extraction and let user confirm/override.
+- Records are keyed by `(tab_name, text_location)`.
+- `text_value` captures the literal cell text (whitespace and newlines preserved).
+- CSV columns match the fields above; boolean values are serialized as `true`/`false` for easy hand editing.
+- Additional metadata (question classification, defaults, answers) is stored in-place and survives across runs.
 
 ---
 
@@ -267,43 +106,62 @@ def load_workbook(filepath: str) -> Workbook:
 ### 2. Extractor
 
 ```python
-def extract_questions(workbook: Workbook) -> list[Question]:
+def extract_catalog(workbook: Workbook) -> list[CatalogRecord]:
     """
     Iterate all sheets, all rows.
-    Identify cells that look like questions.
-    Return ordered list of Question objects.
-    
-    Question identification heuristics:
-    - Ends with "?"
-    - Starts with question words (What, How, Do, Does, Is, Are, Can, Will, etc.)
-    - Contains question patterns ("please describe", "please explain", "provide details")
-    
-    Skip:
-    - Empty cells
-    - Cells with only numbers
-    - Cells with very short content (<10 chars) unless ends with "?"
+    Capture every textual cell (strings only) as a CatalogRecord.
+    Preserve workbook traversal order: sheet order, row order, column order.
+    Skip empty cells and non-text values.
     """
 ```
 
-**Processing order:** Sheet by sheet (in workbook order), then row by row (top to bottom), then column by column (left to right).
+The extractor no longer classifies questions. Its sole purpose is to mirror worksheet text into an in-memory catalog that will later be merged with the persisted CSV.
 
-### 3. Interactive Q&A
+### 3. Catalog Builder
 
 ```python
-def run_qa_session(questions: list[Question]) -> list[Question]:
+def sync_catalog(records: list[CatalogRecord], catalog_path: str) -> list[CatalogRecord]:
     """
-    For each question:
-    1. Display: question number, sheet name, cell reference, question text
-    2. Prompt user for answer
-    3. Store answer in Question object
-    
-    Special inputs:
-    - Empty input: skip question (leave answer as None)
-    - "q" or "quit": exit early, save progress
-    - "b" or "back": go back to previous question
-    - "s" or "skip": skip current question
-    
-    Returns list with answers populated.
+    Load existing catalog CSV if present.
+    Merge by (tab_name, text_location), preserving user-maintained metadata.
+    Apply latest workbook text_value and append brand-new entries.
+    Persist the refreshed catalog CSV (all fields quoted).
+    Return the merged record list for downstream processing.
+    """
+```
+
+CSV columns (all quoted to preserve whitespace and symbols):
+
+| Column | Description |
+|--------|-------------|
+| `tabName` | Worksheet name |
+| `textLocation` | Cell coordinate (e.g., `A13`) |
+| `textValue` | Text content (newlines preserved) |
+| `isQuestion` | `true` / `false` / blank |
+| `textResponse` | Captured answer text |
+| `textResponseLocation` | Target cell for the captured answer |
+| `isDefaultAnswer` | Marks rows that supply default answers |
+| `defaultAnswerQuestionLocation` | Coordinate the default answer applies to |
+| `isInstruction` | Flags instructional rows |
+
+### 4. Interactive Q&A
+
+```python
+def run_qa_session(records: list[CatalogRecord], default_answers: dict[str, str]) -> SessionResult:
+    """
+    Filter catalog records to those with is_question == True AND empty text_response.
+    For each candidate:
+      1. Display question context (sheet, location, text).
+      2. Pre-populate the prompt with any default answer (lookup by defaultAnswerQuestionLocation)
+         or previously captured text_response.
+      3. Collect multiline answer input with navigation commands:
+         - Enter immediately: accept default answer (if present) or skip.
+         - "q" / "quit": abort session and persist progress.
+         - "b" / "back": revisit prior question.
+         - "s" / "skip": skip without saving.
+      4. Prompt for textResponseLocation (suggest cell to the right if empty).
+      5. Persist answer + location on the CatalogRecord.
+    Return SessionResult describing whether the run finished or aborted.
     """
 ```
 
@@ -315,21 +173,26 @@ Question 12/45  │  Sheet: Security  │  Cell: B15
 
 Do you have a documented incident response plan?
 
-Answer (enter to skip, 'q' to quit, 'b' to go back):
+Answer (enter to accept default, 'q' to quit, 'b' to go back, 's' to skip):
+> _
+Response location [C15]:
 > _
 ```
 
-### 4. Writer
+**Response location default:** When prompting for `textResponseLocation`, the CLI suggests the cell immediately to the right of the question cell. Users can override as needed.
+
+### 5. Writer
 
 ```python
 def write_answers(
     filepath: str,
-    questions: list[Question],
+    records: list[CatalogRecord],
     output_path: str | None = None
 ) -> str:
     """
     Load original workbook (fresh load, not from memory).
-    Write each answer to its target cell.
+    For each record with both text_response and text_response_location,
+    write the response to the target cell on the respective worksheet.
     Save to output_path (or filepath_answered.xlsx if not specified).
     
     Returns path to saved file.
@@ -347,54 +210,20 @@ python xlsx_qa.py questionnaire.xlsx
 # Specify output file
 python xlsx_qa.py questionnaire.xlsx -o completed.xlsx
 
-# Resume from saved progress
-python xlsx_qa.py questionnaire.xlsx --resume progress.json
+# Override catalog location
+python xlsx_qa.py questionnaire.xlsx --catalog custom/catalog.csv
 ```
-
----
-
-## Session Persistence
-
-If user quits mid-session, save progress to JSON:
-
-```json
-{
-  "source_file": "questionnaire.xlsx",
-  "timestamp": "2025-01-15T10:30:00Z",
-  "current_index": 12,
-  "questions": [
-    {
-      "id": 1,
-      "sheet": "Security",
-      "coord": "B5",
-      "answer_coord": "C5",
-      "text": "Do you have a security policy?",
-      "answer": "Yes, documented and reviewed annually."
-    },
-    {
-      "id": 2,
-      "sheet": "Security", 
-      "coord": "B6",
-      "answer_coord": "C6",
-      "text": "Is there an incident response plan?",
-      "answer": null
-    }
-  ]
-}
-```
-
----
 
 ## Edge Cases
 
 | Situation | Handling |
 |-----------|----------|
-| Answer cell already has content | Warn user, ask to confirm overwrite |
-| Question cell is merged | Use top-left cell as reference, answer goes to right of merge region |
-| Very long question text | Wrap display at terminal width |
-| Multi-line answer needed | Support `\n` escape or multi-line input mode (triple-enter to finish) |
+| Existing catalog CSV present | Merge rows by `(tabName, textLocation)` and preserve user edits |
+| No rows flagged as questions | Skip Q&A loop, emit reminder, still persist catalog |
+| Default answer rows defined | Auto-surface matching defaults based on `defaultAnswerQuestionLocation` |
+| Response location omitted | Prompt until provided or user navigates back/quit |
 | Non-XLSX file | Fail with clear error message |
-| Empty workbook | Exit with "No questions found" |
+| Empty workbook | Exit with "No textual entries found" |
 
 ---
 
@@ -414,27 +243,30 @@ That's it. No other dependencies needed for MVP.
 
 ```
 xlsx_qa/
-├── xlsx_qa.py        # Single file implementation, or split into:
-├── loader.py         # Workbook loading
-├── extractor.py      # Question extraction
-├── session.py        # Interactive Q&A loop
-├── writer.py         # Answer writing
-└── models.py         # Question dataclass
+├── xlsx_qa.py       # Entry point with bootstrap
+├── __init__.py
+├── app.py           # High-level orchestration
+├── bootstrap.py     # Virtual environment management
+├── cli.py           # Argument parsing
+├── domain.py        # Catalog data models + helpers
+├── extractor.py     # Workbook -> catalog record extraction
+├── loader.py        # Workbook loading utilities
+├── persistence.py   # Catalog CSV read/write
+├── session.py       # Interactive Q&A loop
+└── writer.py        # Workbook answer persistence
 ```
-
-For simplicity, can be a single ~200 line file.
 
 ---
 
 ## Implementation Notes
 
-1. **Question detection is fuzzy** - start conservative (only "?" endings), let user feedback drive expansion of heuristics
+1. **Extraction is exhaustive** - capture every textual cell and let users curate via the CSV rather than relying on heuristics.
 
-2. **Don't get clever with answer placement** - "cell to the right" works for 90% of cases. If a document has a different pattern, user can process it manually or we add config later
+2. **Provide sane defaults** - suggest the cell to the right for answers but always allow manual overrides for unusual layouts.
 
-3. **Always save to new file** - never overwrite input
+3. **Always save to new file** - never overwrite the source workbook when persisting responses.
 
-4. **Progress saving is essential** - 100+ question documents are common, users will quit mid-session
+4. **Catalog = progress** - write the CSV after every run (even on abort) so manual edits and captured answers are never lost.
 
 ---
 
@@ -443,38 +275,37 @@ For simplicity, can be a single ~200 line file.
 ```
 $ python xlsx_qa.py vendor_questionnaire.xlsx
 
-Loading: vendor_questionnaire.xlsx
-Found 3 sheets: ['Security', 'Compliance', 'Technical']
-Extracted 47 questions
+Creating virtual environment in .../venv...
+Virtual environment created.
+Switching to virtual environment...
+Installing missing packages: openpyxl...
+Packages installed.
 
-Starting Q&A session...
-(Commands: enter=skip, q=quit & save, b=back)
+Catalog saved to: vendor_questionnaire_catalog.csv
+No unanswered questions flagged in catalog. Update the CSV and rerun when ready.
+
+# analyst marks isQuestion=true for key prompts inside vendor_questionnaire_catalog.csv
+
+$ python xlsx_qa.py vendor_questionnaire.xlsx
+
+Catalog saved to: vendor_questionnaire_catalog.csv
+Found 3 unanswered questions marked in catalog...
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Question 1/47  │  Sheet: Security  │  Cell: B3
+Question 1/3  │  Sheet: Security  │  Cell: B3
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Does your organization have a formal information security policy?
 
+Answer (enter to accept default, 'q' to quit, 'b' to go back, 's' to skip):
 > Yes, we maintain an Information Security Policy reviewed annually.
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Question 2/47  │  Sheet: Security  │  Cell: B4
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Is the policy approved by executive management?
-
-> Yes, approved by CISO and CEO.
+Response location [C3]:
+> 
 
 ...
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Session complete!
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Answered: 42/47
-Skipped: 5
-
-Saved to: vendor_questionnaire_answered.xlsx
+Catalog saved to: vendor_questionnaire_catalog.csv
+Answers written to: vendor_questionnaire_answered.xlsx
 ```
 
 ---
