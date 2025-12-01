@@ -1,49 +1,22 @@
-"""Question extraction logic."""
+"""Workbook catalog extraction logic."""
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from openpyxl.cell.cell import Cell
-from openpyxl.cell.cell import MergedCell
-from openpyxl.worksheet.worksheet import Worksheet
-from openpyxl.workbook import Workbook
+from openpyxl.cell.cell import Cell, MergedCell
 from openpyxl.utils import get_column_letter
+from openpyxl.workbook import Workbook
+from openpyxl.worksheet.worksheet import Worksheet
 
-from .domain import Question
-
-QUESTION_WORDS = (
-    "who",
-    "what",
-    "when",
-    "where",
-    "why",
-    "how",
-    "do",
-    "does",
-    "did",
-    "is",
-    "are",
-    "can",
-    "could",
-    "will",
-    "would",
-    "please",
-)
-
-PATTERN_HINTS = (
-    "please describe",
-    "please explain",
-    "provide details",
-)
+from .domain import CatalogRecord
 
 
-class QuestionExtractor:
-    """Scan a workbook and build question objects."""
+class WorkbookCatalogExtractor:
+    """Scan a workbook and capture all textual entries."""
 
-    def extract(self, workbook: Workbook) -> List[Question]:
-        questions: List[Question] = []
-        question_id = 1
+    def extract(self, workbook: Workbook) -> List[CatalogRecord]:
+        records: List[CatalogRecord] = []
 
         for sheet in workbook.worksheets:
             merged_lookup = _build_merged_lookup(sheet)
@@ -56,70 +29,30 @@ class QuestionExtractor:
                     if cell.coordinate in merged_lookup.skip_coordinates:
                         continue
 
-                    text = _normalise(cell.value)
-                    if not text:
+                    text_value = _coerce_text(cell.value)
+                    if text_value is None:
                         continue
 
-                    if not self._is_question_text(text):
-                        continue
-
-                    answer_cell = _resolve_answer_cell(sheet, cell, merged_lookup)
-
-                    preexisting = _safe_value(answer_cell) if answer_cell else None
-
-                    questions.append(
-                        Question(
-                            id=question_id,
-                            sheet=sheet.title,
-                            coord=cell.coordinate,
-                            row=cell.row,
-                            col=cell.column,
-                            text=text,
-                            answer_coord=answer_cell.coordinate if answer_cell else get_followup_coordinate(cell),
-                            preexisting_answer=preexisting,
+                    records.append(
+                        CatalogRecord(
+                            tab_name=sheet.title,
+                            text_location=cell.coordinate,
+                            text_value=text_value,
                         )
                     )
-                    question_id += 1
 
-        return questions
-
-    def _is_question_text(self, text: str) -> bool:
-        """Heuristic classifier that determines if text is a question prompt."""
-        lowered = text.lower()
-        if lowered.endswith("?"):
-            return True
-
-        if len(lowered) < 10:
-            return False
-
-        if any(lowered.startswith(word) for word in QUESTION_WORDS):
-            return True
-
-        return any(hint in lowered for hint in PATTERN_HINTS)
+        return records
 
 
-def _normalise(value: object) -> str:
+def _coerce_text(value: object) -> str | None:
     if value is None:
-        return ""
+        return None
     if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, (int, float)):
-        return ""
-    return str(value).strip()
-
-
-def _safe_value(cell: Optional[Cell]) -> Optional[str]:
-    if not cell:
-        return None
-    value = cell.value
-    if value is None:
-        return None
-    return str(value)
+        return value
+    return None
 
 
 class _MergedLookup:
-    """Helper structure for merged-cell calculations."""
-
     __slots__ = ("rightmost_column", "skip_coordinates")
 
     def __init__(self, rightmost_column: Dict[str, int], skip_coordinates: set[str]) -> None:
@@ -144,15 +77,3 @@ def _build_merged_lookup(sheet: Worksheet) -> _MergedLookup:
                     skip_coordinates.add(coord)
 
     return _MergedLookup(rightmost_column, skip_coordinates)
-
-
-def _resolve_answer_cell(sheet: Worksheet, question_cell: Cell, merged_lookup: _MergedLookup) -> Optional[Cell]:
-    rightmost_col = merged_lookup.rightmost_column.get(question_cell.coordinate, question_cell.column)
-    target_column = rightmost_col + 1
-    return sheet.cell(row=question_cell.row, column=target_column)
-
-
-def get_followup_coordinate(question_cell: Cell) -> str:
-    rightmost_col = question_cell.column
-    target_column = rightmost_col + 1
-    return f"{get_column_letter(target_column)}{question_cell.row}"

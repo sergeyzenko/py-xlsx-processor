@@ -2,94 +2,97 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional
+
+
+BOOLEAN_TRUE = {"true", "yes", "y", "1"}
+BOOLEAN_FALSE = {"false", "no", "n", "0"}
 
 
 @dataclass(slots=True)
-class Question:
-    """Immutable representation of a question discovered in the workbook."""
+class CatalogRecord:
+    """Representation of a single catalog entry sourced from the workbook."""
 
-    id: int
-    sheet: str
-    coord: str
-    row: int
-    col: int
-    text: str
-    answer_coord: str
-    answer: Optional[str] = None
-    preexisting_answer: Optional[str] = None
+    tab_name: str
+    text_location: str
+    text_value: str
+    is_question: Optional[bool] = None
+    text_response: Optional[str] = None
+    text_response_location: Optional[str] = None
+    is_default_answer: Optional[bool] = None
+    default_answer_question_location: Optional[str] = None
+    is_instruction: Optional[bool] = None
 
-    def with_answer(self, answer: Optional[str]) -> "Question":
-        """Return a new Question instance with the updated answer."""
-        return Question(
-            id=self.id,
-            sheet=self.sheet,
-            coord=self.coord,
-            row=self.row,
-            col=self.col,
-            text=self.text,
-            answer_coord=self.answer_coord,
-            answer=answer,
-            preexisting_answer=self.preexisting_answer,
-        )
+    def as_csv_row(self) -> List[str]:
+        return [
+            self.tab_name,
+            self.text_location,
+            self.text_value,
+            _bool_to_field(self.is_question),
+            self.text_response or "",
+            self.text_response_location or "",
+            _bool_to_field(self.is_default_answer),
+            self.default_answer_question_location or "",
+            _bool_to_field(self.is_instruction),
+        ]
+
+    def update_from_existing(self, other: "CatalogRecord") -> None:
+        self.is_question = other.is_question
+        self.text_response = other.text_response
+        self.text_response_location = other.text_response_location
+        self.is_default_answer = other.is_default_answer
+        self.default_answer_question_location = other.default_answer_question_location
+        self.is_instruction = other.is_instruction
 
 
-@dataclass(slots=True)
-class ProgressSnapshot:
-    """Serializable representation of session progress."""
+def _bool_to_field(value: Optional[bool]) -> str:
+    if value is None:
+        return ""
+    return "true" if value else "false"
 
-    source_file: str
-    timestamp: datetime
-    current_index: int
-    questions: List[Question] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert the snapshot into a JSON-serializable dictionary."""
-        return {
-            "source_file": self.source_file,
-            "timestamp": self.timestamp.isoformat(timespec="seconds"),
-            "current_index": self.current_index,
-            "questions": [
-                {
-                    "id": q.id,
-                    "sheet": q.sheet,
-                    "coord": q.coord,
-                    "row": q.row,
-                    "col": q.col,
-                    "text": q.text,
-                    "answer_coord": q.answer_coord,
-                    "answer": q.answer,
-                }
-                for q in self.questions
-            ],
-        }
+def parse_bool(value: str | None) -> Optional[bool]:
+    if value is None:
+        return None
+    lowered = value.strip().lower()
+    if lowered in BOOLEAN_TRUE:
+        return True
+    if lowered in BOOLEAN_FALSE:
+        return False
+    return None
 
-    @staticmethod
-    def from_dict(payload: Dict[str, Any]) -> "ProgressSnapshot":
-        """Hydrate a snapshot from a dictionary."""
-        timestamp_value = payload.get("timestamp")
-        timestamp = datetime.fromisoformat(timestamp_value) if timestamp_value else datetime.utcnow()
 
-        questions: List[Question] = []
-        for entry in payload.get("questions", []):
-            questions.append(
-                Question(
-                    id=int(entry["id"]),
-                    sheet=str(entry["sheet"]),
-                    coord=str(entry["coord"]),
-                    row=int(entry["row"]),
-                    col=int(entry["col"]),
-                    text=str(entry["text"]),
-                    answer_coord=str(entry["answer_coord"]),
-                    answer=entry.get("answer"),
-                )
-            )
+def build_catalog_record(row: Dict[str, str]) -> CatalogRecord:
+    return CatalogRecord(
+        tab_name=row["tabName"],
+        text_location=row["textLocation"],
+        text_value=row["textValue"],
+        is_question=parse_bool(row.get("isQuestion")),
+        text_response=row.get("textResponse") or None,
+        text_response_location=row.get("textResponseLocation") or None,
+        is_default_answer=parse_bool(row.get("isDefaultAnswer")),
+        default_answer_question_location=row.get("defaultAnswerQuestionLocation") or None,
+        is_instruction=parse_bool(row.get("isInstruction")),
+    )
 
-        return ProgressSnapshot(
-            source_file=str(payload["source_file"]),
-            timestamp=timestamp,
-            current_index=int(payload.get("current_index", 0)),
-            questions=questions,
-        )
+
+CATALOG_HEADERS: List[str] = [
+    "tabName",
+    "textLocation",
+    "textValue",
+    "isQuestion",
+    "textResponse",
+    "textResponseLocation",
+    "isDefaultAnswer",
+    "defaultAnswerQuestionLocation",
+    "isInstruction",
+]
+
+
+def catalog_key(record: CatalogRecord) -> tuple[str, str]:
+    return (record.tab_name, record.text_location)
+
+
+def order_catalog(records: Iterable[CatalogRecord]) -> List[CatalogRecord]:
+    return list(records)

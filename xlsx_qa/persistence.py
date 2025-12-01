@@ -1,47 +1,62 @@
-"""Progress persistence utilities."""
+"""Catalog persistence utilities."""
 
 from __future__ import annotations
 
-import json
+import csv
 import os
-from datetime import datetime, timezone
-from typing import List
+from typing import Dict, Iterable, List, Tuple
 
-from .domain import ProgressSnapshot, Question
+from .domain import (
+    CATALOG_HEADERS,
+    CatalogRecord,
+    build_catalog_record,
+    catalog_key,
+    order_catalog,
+)
 
 
-class ProgressRepository:
-    """Serialize and deserialize progress snapshots."""
+class CatalogRepository:
+    """Load and persist catalog CSV files."""
 
     def __init__(self, directory: str | None = None) -> None:
         self._directory = directory
 
-    def save(self, filepath: str, questions: List[Question], current_index: int, source_file: str) -> str:
-        snapshot = ProgressSnapshot(
-            source_file=source_file,
-            timestamp=datetime.now(tz=timezone.utc),
-            current_index=current_index,
-            questions=questions,
-        )
+    def load(self, filepath: str) -> Dict[Tuple[str, str], CatalogRecord]:
+        target_path = self._resolve_path(filepath)
+        if not os.path.isfile(target_path):
+            return {}
 
+        with open(target_path, "r", encoding="utf-8", newline="") as stream:
+            reader = csv.DictReader(stream)
+            fieldnames = reader.fieldnames or []
+            missing_headers = [header for header in CATALOG_HEADERS if header not in fieldnames]
+            if missing_headers:
+                raise ValueError(
+                    "Catalog file is missing required columns: " + ", ".join(missing_headers)
+                )
+
+            records: Dict[Tuple[str, str], CatalogRecord] = {}
+            for row in reader:
+                record = build_catalog_record(row)
+                records[catalog_key(record)] = record
+
+        return records
+
+    def save(self, filepath: str, records: Iterable[CatalogRecord]) -> str:
         target_path = self._resolve_path(filepath)
         directory = os.path.dirname(target_path)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        with open(target_path, "w", encoding="utf-8") as stream:
-            json.dump(snapshot.to_dict(), stream, indent=2)
+
+        ordered_records = order_catalog(records)
+
+        with open(target_path, "w", encoding="utf-8", newline="") as stream:
+            writer = csv.writer(stream, quoting=csv.QUOTE_ALL, lineterminator="\n")
+            writer.writerow(CATALOG_HEADERS)
+            for record in ordered_records:
+                writer.writerow(record.as_csv_row())
 
         return target_path
-
-    def load(self, filepath: str) -> ProgressSnapshot:
-        target_path = self._resolve_path(filepath)
-        if not os.path.isfile(target_path):
-            raise FileNotFoundError(f"Progress file not found: {target_path}")
-
-        with open(target_path, "r", encoding="utf-8") as stream:
-            payload = json.load(stream)
-
-        return ProgressSnapshot.from_dict(payload)
 
     def _resolve_path(self, filepath: str) -> str:
         if os.path.isabs(filepath):

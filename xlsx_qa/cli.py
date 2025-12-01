@@ -13,7 +13,7 @@ class AppConfig:
 
     source_path: str
     output_path: Optional[str] = None
-    resume_path: Optional[str] = None
+    catalog_path: Optional[str] = None
 
 
 def parse_args(argv: list[str] | None = None) -> AppConfig:
@@ -27,11 +27,11 @@ def parse_args(argv: list[str] | None = None) -> AppConfig:
         help="Where to save the answered workbook",
     )
     parser.add_argument(
-        "--resume",
-        dest="resume",
-        metavar="JSON",
-        help="Resume an interrupted session from the provided JSON file",
+        "--catalog",
+        dest="catalog",
+        metavar="CSV",
+        help="Override the default catalog CSV path",
     )
 
     args = parser.parse_args(argv)
-    return AppConfig(source_path=args.source, output_path=args.output, resume_path=args.resume)
+    return AppConfig(source_path=args.source, output_path=args.output, catalog_path=args.catalog)
